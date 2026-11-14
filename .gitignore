@@ -1,0 +1,44 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Datasets
+data/raw/
+data/processed/
+data/celeba/
+*.zip
+*.tar.gz
+
+# Model checkpoints
+checkpoints/*.pth
+checkpoints/*.pt
+!checkpoints/README.md
+
+# Outputs
+outputs/comparisons/*.png
+outputs/comparisons/*.jpg
+outputs/colorized_images/*.png
+outputs/colorized_images/*.jpg
+outputs/training_graphs/*.png
+outputs/training_graphs/*.jpg
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/*

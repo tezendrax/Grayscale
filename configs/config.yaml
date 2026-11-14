@@ -1,0 +1,43 @@
+# Configuration for CNN-Based Image Colorization
+project:
+  name: "CNN-Image-Colorization"
+  framework: "PyTorch"
+  seed: 42
+
+dataset:
+  raw_dir: "data/raw"
+  processed_dir: "data/processed"
+  image_size: 128
+  train_split: 0.8
+  val_split: 0.1
+  test_split: 0.1
+  num_workers: 2
+
+model:
+  in_channels: 1
+  out_channels: 2
+  basic_cnn:
+    filters: [32, 64, 128]
+  unet:
+    encoder_filters: [32, 64, 128, 256]
+    bottleneck_filters: 512
+
+training:
+  batch_size: 16
+  epochs: 30
+  learning_rate: 0.001
+  weight_decay: 0.00001
+  loss: "L1" # L1 or Huber
+  save_best_only: true
+  early_stopping_patience: 10
+  checkpoint_dir: "checkpoints"
+
+evaluation:
+  metrics: ["MAE", "PSNR", "SSIM"]
+  save_visualizations: true
+
+paths:
+  outputs_dir: "outputs"
+  comparisons_dir: "outputs/comparisons"
+  colorized_dir: "outputs/colorized_images"
+  training_graphs_dir: "outputs/training_graphs"
