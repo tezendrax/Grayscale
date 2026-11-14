@@ -105,71 +105,133 @@ The reconstructed LAB image is then converted into RGB to generate the final col
 
 ## 5. CNN Models and Architecture
 
-We will implement two CNN models to understand and compare their performance.
+We implement and benchmark two distinct convolutional architectures for image colorization:
+1. **Model 1: Basic CNN (Baseline Model)**
+2. **Model 2: U-Net CNN (Primary Model with Skip Connections)**
+
+---
+
+### Detailed Component Descriptions
+
+Each component of the neural network architectures is designed for specific feature extraction and reconstruction tasks:
+
+#### 1. DoubleConv Block (`models/blocks.py`)
+- **Structure:**
+  $$\text{Input} \longrightarrow [\text{Conv2D}(3\times3) \to \text{BatchNorm2d} \to \text{ReLU}] \times 2 \longrightarrow \text{Output}$$
+- **Role:** Applies two successive $3 \times 3$ convolutions with zero-padding ($p=1$) to preserve spatial resolution while capturing local receptive field patterns (textures, facial lines, color gradients).
+- **Batch Normalization:** Stabilizes gradient propagation and speeds up convergence across mini-batches.
+- **ReLU Activation:** Introduces non-linearity ($f(x) = \max(0, x)$) allowing representation of complex facial characteristics.
+
+#### 2. Downsampling Block / DownBlock (`models/blocks.py`)
+- **Structure:**
+  $$\text{Input} \longrightarrow \text{MaxPool2D}(2\times2, \text{stride}=2) \longrightarrow \text{DoubleConv}(\text{in\_ch}, \text{out\_ch}) \longrightarrow \text{Output}$$
+- **Role:** Halves the height and width ($H/2, W/2$) while doubling channel depth, allowing subsequent convolution layers to capture wider spatial contexts (head shapes, background lighting).
+
+#### 3. Bottleneck Representation
+- **Structure:** `DoubleConv(256, 512)` at spatial resolution $8 \times 8$.
+- **Role:** The deepest layer of the network with the largest receptive field. Encodes abstract semantic representations of the face (overall skin tone, hair color category, background atmosphere) independent of high-frequency noise.
+
+#### 4. Skip Connections (The Core of U-Net)
+- **Mechanism:**
+  $$\mathbf{F}_{\text{decoder\_in}} = \text{Concat}(\mathbf{F}_{\text{encoder\_skip}}, \text{Up}(\mathbf{F}_{\text{decoder\_prev}}), \text{dim}=1)$$
+- **Why Skip Connections are Essential for Colorization:**
+  - Standard downsampling discards high-frequency spatial boundaries (eyelid creases, lips, hair borders).
+  - Skip connections copy early high-resolution feature maps directly across the network to corresponding decoder stages.
+  - This prevents color bleeding across anatomical boundaries (e.g., prevents hair color from leaking onto the forehead or lips from bleeding onto skin).
+  - Also acts as gradient highways that alleviate vanishing gradients during backpropagation.
+
+#### 5. Upsampling Block / UpBlock (`models/blocks.py`)
+- **Structure:**
+  $$\text{Input } x_1 \longrightarrow \text{ConvTranspose2d}(2\times2, \text{stride}=2) \longrightarrow \text{Pad/Align} \longrightarrow \text{Concat with } x_2 \longrightarrow \text{DoubleConv} \longrightarrow \text{Output}$$
+- **Role:** Reconstructs spatial resolution ($2\times$ upsampling), aligns spatial dimensions if mismatched, concatenates encoder skip features, and reduces channel dimensions.
+
+#### 6. Output Layer & Tanh Activation
+- **Structure:** $1 \times 1 \text{ Conv2D}(32 \to 2) \longrightarrow \tanh$
+- **Role:** Maps the final 32 reconstructed feature channels down to the 2 target color channels ($a$ and $b$).
+- **Bounded Range:** The $\tanh$ non-linearity strictly bounds predictions to $[-1.0, 1.0]$, corresponding to normalized CIELAB $a, b$ space ($[-128, 127]$).
+
+---
 
 ### Model 1: Basic CNN (Baseline)
 
-The Basic CNN will act as our baseline model.
+A plain sequential encoder-decoder network without skip connections:
 
-It will use multiple convolutional layers to extract image features and predict the missing color channels.
+```
+Input L (128x128x1)
+  │
+  ▼
+[Conv 1x32, 3x3] + BN + ReLU                  --> (128 x 128 x 32)
+  │
+  ▼
+[Conv 32x64, stride 2] + BN + ReLU           --> (64 x 64 x 64)
+  │
+  ▼
+[Conv 64x128, stride 2] + BN + ReLU          --> (32 x 32 x 128)
+  │
+  ▼
+[Conv 128x256, stride 2] + BN + ReLU         --> (16 x 16 x 256)
+  │
+  ▼
+[Conv 256x256, 3x3] + BN + ReLU              --> (16 x 16 x 256) [Bottleneck]
+  │
+  ▼
+[ConvTranspose 256x128, stride 2] + BN + ReLU --> (32 x 32 x 128)
+  │
+  ▼
+[ConvTranspose 128x64, stride 2] + BN + ReLU  --> (64 x 64 x 64)
+  │
+  ▼
+[ConvTranspose 64x32, stride 2] + BN + ReLU   --> (128 x 128 x 32)
+  │
+  ▼
+[Conv 32x2, 1x1] + Tanh                       --> (128 x 128 x 2) [Predicted ab]
+```
 
-Main components:
-
-- Convolutional layers (Conv2D).
-- ReLU activation.
-- Batch Normalization.
-- Feature extraction layers.
-- Output convolution layer.
-
-**Input:** 128 × 128 × 1
-
-**Output:** 128 × 128 × 2
-
-Purpose: Establish a baseline against which the U-Net architecture can be evaluated.
+---
 
 ### Model 2: U-Net CNN (Primary Model)
 
-Our main architecture will be a custom U-Net-based encoder-decoder CNN with skip connections.
+A multi-scale encoder-decoder with long skip connections bridging corresponding spatial resolutions:
 
-U-Net is suitable for image-to-image tasks because it extracts high-level features while preserving spatial information.
+```mermaid
+flowchart TD
+    In["Input L (128 x 128 x 1)"] --> Inc["Inc: DoubleConv(1, 32)\n128 x 128 x 32"]
+    
+    Inc -->|Down 1: MaxPool 2x2| D1["Down1: DoubleConv(32, 64)\n64 x 64 x 64"]
+    D1 -->|Down 2: MaxPool 2x2| D2["Down2: DoubleConv(64, 128)\n32 x 32 x 128"]
+    D2 -->|Down 3: MaxPool 2x2| D3["Down3: DoubleConv(128, 256)\n16 x 16 x 256"]
+    D3 -->|Down 4: MaxPool 2x2| BN["Bottleneck: DoubleConv(256, 512)\n8 x 8 x 512"]
 
-It consists of four major components:
+    BN -->|Up 1: ConvTranspose 2x2| U1["Up1: Concat with D3\nDoubleConv(512, 256)\n16 x 16 x 256"]
+    D3 -.->|Skip Connection 4| U1
 
-**A. Encoder**
+    U1 -->|Up 2: ConvTranspose 2x2| U2["Up2: Concat with D2\nDoubleConv(256, 128)\n32 x 32 x 128"]
+    D2 -.->|Skip Connection 3| U2
 
-Extracts image features such as facial structures, edges, textures, hair and skin regions.
+    U2 -->|Up 3: ConvTranspose 2x2| U3["Up3: Concat with D1\nDoubleConv(128, 64)\n64 x 64 x 64"]
+    D1 -.->|Skip Connection 2| U3
 
-**B. Bottleneck**
+    U3 -->|Up 4: ConvTranspose 2x2| U4["Up4: Concat with Inc\nDoubleConv(64, 32)\n128 x 128 x 32"]
+    Inc -.->|Skip Connection 1| U4
 
-Captures deeper and more complex image representations.
+    U4 --> Out["Outc: 1x1 Conv(32, 2) + Tanh\n128 x 128 x 2"]
+```
 
-**C. Decoder**
+#### Detailed Layer-by-Layer Dimension Trace
 
-Gradually reconstructs the image and generates the predicted color channels.
-
-**D. Skip Connections**
-
-Transfer features from encoder layers to corresponding decoder layers, helping preserve spatial details during image reconstruction.
-
-### Proposed U-Net Architecture
-
-| Stage | Operation | Output Dimensions |
-|---|---|---|
-| Input | Grayscale | 128 × 128 × 1 |
-| Encoder 1 | Double Conv, 32 filters | 128 × 128 × 32 |
-| Encoder 2 | Double Conv, 64 filters | 64 × 64 × 64 |
-| Encoder 3 | Double Conv, 128 filters | 32 × 32 × 128 |
-| Encoder 4 | Double Conv, 256 filters | 16 × 16 × 256 |
-| Bottleneck | Double Conv, 512 filters | 8 × 8 × 512 |
-| Decoder 1 | Upsampling + Skip | 16 × 16 × 256 |
-| Decoder 2 | Upsampling + Skip | 32 × 32 × 128 |
-| Decoder 3 | Upsampling + Skip | 64 × 64 × 64 |
-| Decoder 4 | Upsampling + Skip | 128 × 128 × 32 |
-| Output | 1 × 1 Conv, 2 filters | 128 × 128 × 2 |
-
-Each convolution block contains two 3 × 3 convolutional layers, Batch Normalization and ReLU activation.
-
-Max Pooling is used for downsampling, while upsampling and skip connections are used for image reconstruction.
+| Stage | Layer Name | Input Tensor Shape | Layer Operations | Output Tensor Shape |
+|---|---|---|---|---|
+| **Input** | `input` | `(B, 1, 128, 128)` | Lightness channel in $[0, 1]$ | `(B, 1, 128, 128)` |
+| **Encoder 1** | `inc` | `(B, 1, 128, 128)` | `DoubleConv(1, 32)` ($3\times3$ Conv + BN + ReLU $\times 2$) | `(B, 32, 128, 128)` |
+| **Encoder 2** | `down1` | `(B, 32, 128, 128)` | `MaxPool(2) -> DoubleConv(32, 64)` | `(B, 64, 64, 64)` |
+| **Encoder 3** | `down2` | `(B, 64, 64, 64)` | `MaxPool(2) -> DoubleConv(64, 128)` | `(B, 128, 32, 32)` |
+| **Encoder 4** | `down3` | `(B, 128, 32, 32)` | `MaxPool(2) -> DoubleConv(128, 256)` | `(B, 256, 16, 16)` |
+| **Bottleneck**| `bottleneck` | `(B, 256, 16, 16)` | `MaxPool(2) -> DoubleConv(256, 512)` | `(B, 512, 8, 8)` |
+| **Decoder 1** | `up1` | `(B, 512, 8, 8)` | `Up(2x) -> Cat(down3: 256) -> DoubleConv(512, 256)` | `(B, 256, 16, 16)` |
+| **Decoder 2** | `up2` | `(B, 256, 16, 16)` | `Up(2x) -> Cat(down2: 128) -> DoubleConv(256, 128)` | `(B, 128, 32, 32)` |
+| **Decoder 3** | `up3` | `(B, 128, 32, 32)` | `Up(2x) -> Cat(down1: 64) -> DoubleConv(128, 64)` | `(B, 64, 64, 64)` |
+| **Decoder 4** | `up4` | `(B, 64, 64, 64)` | `Up(2x) -> Cat(inc: 32) -> DoubleConv(64, 32)` | `(B, 32, 128, 128)` |
+| **Output** | `outc` | `(B, 32, 128, 128)` | `1x1 Conv(32, 2) -> Tanh()` | `(B, 2, 128, 128)` |
 
 ---
 
@@ -285,74 +347,158 @@ Our implementation will follow these stages:
 
 ---
 
-## 9. Project Functions and Modules
+## 9. Project Functions and Module Workflows
 
-The repository will be divided into modules for easier development and maintenance.
+The repository is modularized into distinct packages. Below is the comprehensive technical breakdown and workflow for every module in the project.
 
-| File | Main Responsibility |
-|---|---|
-| `prepare_dataset.py` | Dataset preprocessing |
-| `color_space.py` | RGB/LAB conversion |
-| `celebA_dataset.py` | PyTorch Dataset and DataLoader |
-| `blocks.py` | Reusable convolution blocks |
-| `basic_cnn.py` | Basic CNN architecture |
-| `unet.py` | U-Net architecture |
-| `train.py` | Model training |
-| `trainer.py` | Training and validation loops |
-| `loss.py` | Loss calculation |
-| `predict.py` | Image colorization |
-| `evaluate.py` | Model evaluation |
-| `metrics.py` | MAE, PSNR and SSIM |
-| `visualization.py` | Image comparisons and graphs |
-| `compare_models.py` | Basic CNN vs U-Net comparison |
+```
+       ┌────────────────────────┐
+       │   configs/config.yaml  │
+       └───────────┬────────────┘
+                   │ Configuration & Hyperparameters
+                   ▼
+┌──────────────────────────────────────┐     ┌──────────────────────────────────────┐
+│  preprocessing/prepare_dataset.py     │────>│  preprocessing/color_space.py        │
+│  (Image validation & 128x128 resize) │     │  (RGB <-> CIELAB normalization)      │
+└──────────────────┬───────────────────┘     └──────────────────┬───────────────────┘
+                   │                                            │
+                   ▼                                            ▼
+┌───────────────────────────────────────────────────────────────────────────────────┐
+│  data/celebA_dataset.py                                                           │
+│  - CelebADataset (PyTorch Dataset extracting L in [0, 1] & ab in [-1, 1])          │
+│  - get_dataloaders (80% Train, 10% Val, 10% Test loaders)                          │
+└──────────────────────────────────┬────────────────────────────────────────────────┘
+                                   │
+                                   ▼
+┌───────────────────────────────────────────────────────────────────────────────────┐
+│  models/                                                                          │
+│  ├── blocks.py     : DoubleConv, DownBlock, UpBlock with concatenation            │
+│  ├── basic_cnn.py  : Baseline sequential encoder-decoder                          │
+│  └── unet.py       : Primary U-Net with 4 skip connections + Tanh activation     │
+└──────────────────────────────────┬────────────────────────────────────────────────┘
+                                   │
+                                   ▼
+┌───────────────────────────────────────────────────────────────────────────────────┐
+│  training/                                                                        │
+│  ├── loss.py      : L1 Colorization Loss (Mean(|Actual - Predicted|))             │
+│  ├── validate.py  : Validation evaluation loop & metric aggregation               │
+│  ├── trainer.py   : Epoch training, ReduceLROnPlateau, & early stopping           │
+│  └── train.py     : Master CLI training entry point                               │
+└──────────────────┬────────────────────────────────────────────┬───────────────────┘
+                   │ Checkpoints Saved                          │ Trained Models
+                   ▼                                            ▼
+┌──────────────────────────────────────┐     ┌──────────────────────────────────────┐
+│  utils/                              │     │  testing/                            │
+│  ├── checkpoint.py (Save/Load .pth)  │     │  ├── predict.py (Image colorization) │
+│  ├── metrics.py    (MAE, PSNR, SSIM) │────>│  ├── evaluate.py (Test evaluation)   │
+│  └── visualization.py (Grids & plots)│     │  └── compare_models.py (Benchmarks)  │
+└──────────────────────────────────────┘     └──────────────────────────────────────┘
+```
 
-### Important Functions
+---
 
-- `rgb_to_lab()` – Converts RGB images into LAB.
-- `lab_to_rgb()` – Converts reconstructed LAB images into RGB.
-- `__getitem__()` – Loads grayscale inputs and corresponding color targets.
-- `DoubleConv()` – Implements two convolutional layers.
-- `forward()` – Performs CNN forward propagation.
-- `train_one_epoch()` – Trains the model for one epoch.
-- `validate_one_epoch()` – Evaluates validation performance.
-- `predict_color_channels()` – Predicts a and b channels.
-- `colorize_image()` – Generates the final colorized image.
-- `calculate_mae()` – Calculates pixel-level error.
-- `calculate_psnr()` – Measures reconstruction fidelity.
-- `calculate_ssim()` – Measures structural similarity.
+### Detailed Module-by-Module Workflow
+
+#### 1. Configuration (`configs/config.yaml`)
+- **Workflow:** Central single source of truth containing hyperparameters (image size: 128, batch size: 16, epochs: 30, learning rate: 0.001, loss: L1, splits: 80/10/10). Loaded by `train.py` and downstream modules.
+
+#### 2. Color Space Conversion (`preprocessing/color_space.py`)
+- **Key Functions:**
+  - `rgb_to_lab(image)`: Converts RGB array/tensor into normalized LAB.
+    - $L_{\text{norm}} = L / 100.0 \in [0, 1]$
+    - $a_{\text{norm}} = a / 128.0 \in [-1, 1]$
+    - $b_{\text{norm}} = b / 128.0 \in [-1, 1]$
+  - `lab_to_rgb(L, ab)`: Exact inverse denormalization:
+    - Multiplies $L$ by $100.0$ and $ab$ by $128.0$.
+    - Recombines into 3D LAB float array.
+    - Applies `cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)` and clips to uint8 $[0, 255]$.
+- **Data Flow:** Operates on both numpy arrays (single image) and PyTorch tensors (batched).
+
+#### 3. Dataset Preprocessing (`preprocessing/prepare_dataset.py`)
+- **Key Functions:**
+  - `generate_sample_dataset()`: Synthesizes diverse facial portrait samples if raw data is missing, enabling out-of-the-box execution.
+  - `preprocess_directory()`: Iterates over raw images, verifies file integrity, resizes to $128 \times 128$ with bilinear filtering, and saves to `data/processed/`.
+
+#### 4. PyTorch Dataset & Loaders (`data/celebA_dataset.py`)
+- **Classes & Functions:**
+  - `CelebADataset(Dataset)`: Reads image from disk, converts to RGB, resizes, applies random horizontal flip data augmentation during training, transforms to normalized LAB, and returns a dictionary:
+    ```python
+    {"L": Tensor(1, 128, 128), "ab": Tensor(2, 128, 128), "rgb": Tensor(3, 128, 128), "path": str}
+    ```
+  - `get_dataloaders()`: Discovers all images, randomly partitions them (80% train, 10% val, 10% test) with a deterministic seed (`42`), and constructs memory-efficient PyTorch DataLoaders.
+
+#### 5. Convolutional Blocks (`models/blocks.py`)
+- **Classes:**
+  - `DoubleConv(in_ch, out_ch)`: Two sequential `Conv2d(3x3) -> BatchNorm2d -> ReLU` blocks.
+  - `DownBlock(in_ch, out_ch)`: `MaxPool2d(2, 2)` followed by `DoubleConv`.
+  - `UpBlock(in_ch, out_ch)`: Upsamples via `ConvTranspose2d` (or bilinear upsample), checks for any spatial padding offset, concatenates encoder skip features along channel dimension (`dim=1`), and reduces channels through `DoubleConv`.
+
+#### 6. Neural Network Architectures (`models/basic_cnn.py` & `models/unet.py`)
+- **BasicCNN:** Sequential encoder-decoder without skip connections ($128 \times 128 \times 1 \to 128 \times 128 \times 2$). Output layer is followed by `Tanh()`.
+- **UNet:** 4-level encoder with skip connections, bottleneck, and 4-level decoder ($128 \times 128 \times 1 \to 128 \times 128 \times 2$) followed by `Tanh()`.
+
+#### 7. Loss Calculation (`training/loss.py`)
+- **Class:** `ColorizationLoss(loss_type="L1")`
+- **Workflow:** Computes $\frac{1}{N} \sum | y_{ab} - \hat{y}_{ab} |$. Avoids color desaturation artifacts inherent to L2/MSE loss.
+
+#### 8. Validation Pipeline (`training/validate.py`)
+- **Function:** `validate_one_epoch(model, val_loader, criterion, device, compute_metrics=False)`
+- **Workflow:** Evaluates model without gradient computation (`torch.no_grad()`), calculates average loss across all validation batches, and optionally calculates MAE, PSNR, and SSIM.
+
+#### 9. Trainer Engine (`training/trainer.py`)
+- **Class:** `Trainer`
+- **Workflow:** Manages full training epoch cycles:
+  1. Calls `train_one_epoch()`: forward pass $\to$ loss calculation $\to$ backpropagation $\to$ Adam optimizer step.
+  2. Calls `validate_one_epoch()`: evaluates generalization error.
+  3. Steps learning rate scheduler (`ReduceLROnPlateau`).
+  4. Checks if current epoch achieved the best validation loss; if so, triggers checkpoint saving.
+  5. Plots and updates training & validation loss curves into `outputs/training_graphs/`.
+
+#### 10. Training CLI Entry Point (`training/train.py`)
+- **Workflow:** Parses command-line arguments (`--model`, `--epochs`, `--batch-size`, `--lr`), loads configuration, initializes DataLoaders, constructs selected model architectures, and starts training.
+
+#### 11. Inference & Prediction (`testing/predict.py`)
+- **Key Functions:**
+  - `predict_color_channels(model, l_tensor, device)`: Predicts $ab$ channels from input $L$.
+  - `colorize_image(model, image_path, device)`: Takes any input image, extracts $L$, runs prediction, denormalizes, merges back to LAB, converts to RGB, and saves the colorized image to disk.
+
+#### 12. Model Evaluation (`testing/evaluate.py`)
+- **Workflow:** Loads trained weights from checkpoint, iterates over unseen test dataset, reconstructs color images, and computes dataset-wide average MAE, PSNR, and SSIM scores.
+
+#### 13. Comparative Benchmarking (`testing/compare_models.py`)
+- **Workflow:** Evaluates both Basic CNN and U-Net side-by-side on the test dataset:
+  - Generates numerical comparison table.
+  - Produces 4-panel visual comparison images: `[Original RGB | Grayscale L | Basic CNN | U-Net]`.
+  - Saves figures to `outputs/comparisons/`.
+
+#### 14. Metrics & Visualization Utilities (`utils/metrics.py`, `utils/visualization.py`, `utils/checkpoint.py`)
+- **`metrics.py`:** Standalone implementations for MAE, PSNR (dB), and SSIM ($[-1, 1]$).
+- **`visualization.py`:** Generates publication-ready Matplotlib grids and training curves.
+- **`checkpoint.py`:** Robust PyTorch checkpoint saving and loading utilities with device mapping.
 
 ---
 
 ## 10. Evaluation and Model Comparison
 
-We will compare the original image with the generated color image using visual and numerical evaluation.
+> **For the complete step-by-step walkthrough of the entire pipeline, data cleaning, and visual analysis, read [WORKFLOW_AND_RESULTS.md](WORKFLOW_AND_RESULTS.md).**
 
-### Visual Comparison
+We compare the original image with the generated color image using visual and numerical evaluation on held-out test data.
 
-For each selected test image, we will display:
+### Numerical Evaluation Benchmark
 
-1. Original RGB image.
-2. Grayscale input image.
-3. Basic CNN prediction.
-4. U-Net prediction.
+| Metric | Basic CNN (Baseline) | U-Net (Primary Model) | Optimal Direction | Improvement |
+|---|:---:|:---:|:---:|:---:|
+| **Mean Absolute Error (MAE)** | 21.1657 | **17.2167** | Lower $\downarrow$ | **18.66% lower error** |
+| **Peak Signal-to-Noise Ratio (PSNR)** | 19.45 dB | **19.93 dB** | Higher $\uparrow$ | **+0.48 dB higher fidelity** |
+| **Structural Similarity (SSIM)** | 0.8655 | **0.8775** | Higher $\uparrow$ | **+0.012 higher texture retention** |
 
-### Evaluation Metrics
+### Visual Comparison Panels
 
-| Metric | Purpose | Better Result |
-|---|---|---|
-| MAE | Measures average pixel error | Lower |
-| PSNR | Measures reconstruction fidelity | Higher |
-| SSIM | Measures structural similarity | Higher |
-
-All metrics will be calculated on reconstructed RGB images using the same pixel range and the held-out test dataset.
-
-### Experimental Comparison
-
-The main experiment will investigate:
-
-**Does a U-Net architecture with skip connections produce better colorization results than a basic CNN?**
-
-Both models will use the same dataset split and evaluation conditions.
+For each selected test image, our comparison pipeline generates a 4-panel side-by-side grid saved in `outputs/comparisons/`:
+1. **Original RGB Image:** Ground truth color reference.
+2. **Grayscale Input Image:** Input lightness channel ($L$).
+3. **Basic CNN Prediction:** Baseline output (noticeable color bleeding and lower saturation).
+4. **U-Net Prediction:** Primary output (crisp facial contours, realistic skin warmth, distinct lips and hair borders).
 
 ---
 
