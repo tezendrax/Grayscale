@@ -22,6 +22,7 @@ venv.bak/
 # Datasets
 data/raw/
 data/processed/
+data/grayscale/
 data/celeba/
 *.zip
 *.tar.gz
@@ -38,6 +39,7 @@ outputs/colorized_images/*.png
 outputs/colorized_images/*.jpg
 outputs/training_graphs/*.png
 outputs/training_graphs/*.jpg
+outputs/grayscale_samples/*.png
 
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints/
